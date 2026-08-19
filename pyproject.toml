@@ -1,0 +1,23 @@
+[project]
+name = "agentic-software-engineer"
+version = "0.1.0"
+description = "A safe, explainable coding-agent MVP for Python repositories"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "streamlit>=1.38,<2",
+  "pydantic-settings>=2.4,<3", "python-multipart>=0.0.9,<1", "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.6,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# FastAPI uses File(...) as an intentional dependency marker in route signatures.
+ignore = ["B008"]
