@@ -3,7 +3,7 @@
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app.repository import analyze_repository, clone_public_github, save_zip
+from app.repository import analyze_repository, clone_public_github, save_python_files, save_zip
 from app.schemas import TaskRequest
 from app.tools.execution import run_tests
 from app.workflow import MODEL_ROUTER, TASKS, run_task
@@ -23,6 +23,13 @@ def health():
 @app.post("/api/repositories/upload")
 async def upload_repository(file: UploadFile = File(...)):
     repo_id = await save_zip(file)
+    return {"id": repo_id, "summary": analyze_repository(repo_id)}
+
+
+@app.post("/api/repositories/files")
+async def upload_python_files(files: list[UploadFile] = File(...)):
+    """Accept a collection of loose Python files as a temporary repository."""
+    repo_id = await save_python_files(files)
     return {"id": repo_id, "summary": analyze_repository(repo_id)}
 
 

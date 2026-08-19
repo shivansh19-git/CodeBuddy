@@ -95,6 +95,43 @@ async def save_zip(upload: UploadFile) -> str:
     return repo_id
 
 
+async def save_python_files(uploads: list[UploadFile]) -> str:
+    """Create a small task repository from one or more `.py` uploads.
+
+    Browser-uploaded filenames are reduced to their basename, so a malicious
+    name such as `../../secret.py` cannot choose a host filesystem location.
+    Duplicate names receive a predictable suffix instead of overwriting data.
+    """
+    if not uploads:
+        raise HTTPException(400, "Upload at least one Python file.")
+    if len(uploads) > settings.max_repository_files:
+        raise HTTPException(413, "Upload exceeds configured file-count limit.")
+    repo_id, root = str(uuid.uuid4()), settings.workspace_root / str(uuid.uuid4())
+    root.mkdir(parents=True, exist_ok=False)
+    total_bytes = 0
+    try:
+        for upload in uploads:
+            filename = Path(upload.filename or "").name
+            if not filename or Path(filename).suffix.lower() != ".py":
+                raise HTTPException(400, "Only .py files may be uploaded in this input mode.")
+            payload = await upload.read()
+            total_bytes += len(payload)
+            if total_bytes > settings.max_repository_size_mb * 1024 * 1024:
+                raise HTTPException(413, "Uploads exceed configured repository size limit.")
+            destination = root / filename
+            counter = 2
+            while destination.exists():
+                destination = root / f"{Path(filename).stem}_{counter}.py"
+                counter += 1
+            destination.write_bytes(payload)
+        _validate_limits(root)
+    except HTTPException:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+    REPOSITORIES[repo_id] = root
+    return repo_id
+
+
 def clone_public_github(url: str) -> str:
     """Clone only a public github.com HTTPS URL, using a constrained command."""
     parsed = urlparse(url)

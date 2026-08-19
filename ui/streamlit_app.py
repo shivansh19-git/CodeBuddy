@@ -18,7 +18,7 @@ with st.sidebar:
     )
 
 st.header("New task")
-tab_upload, tab_github = st.tabs(["Upload ZIP", "Public GitHub URL"])
+tab_upload, tab_files, tab_github = st.tabs(["Upload ZIP", "Python files", "Public GitHub URL"])
 repo_id = st.session_state.get("repository_id")
 try:
     with tab_upload:
@@ -27,6 +27,25 @@ try:
             response = requests.post(
                 f"{API_URL}/api/repositories/upload",
                 files={"file": (archive.name, archive.getvalue(), "application/zip")},
+                timeout=60,
+            )
+            response.raise_for_status()
+            st.session_state.repository_id = response.json()["id"]
+            st.rerun()
+    with tab_files:
+        python_files = st.file_uploader(
+            "Python files (.py)",
+            type=["py"],
+            accept_multiple_files=True,
+            help="Upload one or more source files. Each is treated as part of a temporary project.",
+        )
+        if python_files and st.button("Analyze Python files"):
+            response = requests.post(
+                f"{API_URL}/api/repositories/files",
+                files=[
+                    ("files", (file.name, file.getvalue(), "text/x-python"))
+                    for file in python_files
+                ],
                 timeout=60,
             )
             response.raise_for_status()

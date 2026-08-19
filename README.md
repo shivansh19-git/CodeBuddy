@@ -1,10 +1,11 @@
 # Agentic Software Engineer
 
-An explainable, safety-first MVP of a coding agent for small Python repositories. It accepts a ZIP or public GitHub repository, maps the code with Python AST, retrieves relevant symbols, produces an auditable plan, and shows every public activity event in a professional Streamlit workspace.
+An explainable, safety-first MVP of a coding agent for small Python repositories. It accepts a ZIP, one or more Python files, or a public GitHub repository; maps the code with Python AST; retrieves relevant symbols; produces an auditable plan; and shows every public activity event in a professional Streamlit workspace.
 
 ## What works today
 
 - Safe ZIP validation and extraction (including path-traversal protection)
+- One or more loose `.py` file uploads, with safe filenames and size limits
 - Public HTTPS GitHub clone with repository file limits
 - Python AST extraction of classes and functions with source locations
 - Dependency-free lexical retrieval of relevant symbols
@@ -23,7 +24,7 @@ The PRD requires real agent work rather than simulated results. This starter doe
 ## UI tour
 
 1. **Sidebar — Provider status:** tells you whether implementation can start. It never displays keys or invented quota data.
-2. **New task:** upload a Python ZIP or provide a public GitHub URL, then describe the requested change and set the correction budget.
+2. **New task:** upload a Python ZIP, select one or more `.py` files, or provide a public GitHub URL. Then describe the requested change and set the correction budget.
 3. **Agent workspace:** a concise activity timeline shows observable milestones, not private chain-of-thought. The plan explains intended work and Retrieved code lists the functions/classes selected for context.
 4. **Review area:** shows why the task has paused or, once a provider is connected, the real review result.
 
