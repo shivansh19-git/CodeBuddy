@@ -27,3 +27,15 @@ def test_rejects_non_python_file_upload():
         files=[("files", ("notes.txt", b"not code", "text/plain"))],
     )
     assert response.status_code == 400
+
+
+def test_tests_endpoint_uses_repository_id_after_task_state_is_lost(monkeypatch):
+    """Testing is tied to the durable workspace, not a temporary task object."""
+    monkeypatch.setattr("app.main.repository_root", lambda _repository_id: object())
+    monkeypatch.setattr(
+        "app.main.run_tests",
+        lambda _repository_id: {"success": False, "output": "no tests ran"},
+    )
+    response = client.post("/api/repositories/persisted-repo/tests")
+    assert response.status_code == 200
+    assert response.json()["output"] == "no tests ran"

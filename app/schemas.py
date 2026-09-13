@@ -45,13 +45,33 @@ class TestResult(BaseModel):
     skipped: int = 0
     runtime_seconds: float = 0
     success: bool = False
+    no_tests_collected: bool = False
     output: str = "Tests have not run."
+
+
+class Plan(BaseModel):
+    """Public structured plan; it never contains hidden model reasoning."""
+
+    goal: str
+    steps: list[str] = Field(min_length=1, max_length=8)
+    files_likely_affected: list[str] = Field(default_factory=list)
+    tests_required: list[str] = Field(default_factory=list)
+
+
+class ReviewResult(BaseModel):
+    """Evidence-based final review contract."""
+
+    approved: bool
+    score: float = Field(ge=0, le=10)
+    issues: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class TaskRequest(BaseModel):
     repository_id: str
     description: str = Field(min_length=5, max_length=4000)
-    max_iterations: int = Field(default=5, ge=1, le=10)
+    # The initial implementation is attempt 1, so two attempts allow one repair pass.
+    max_iterations: int = Field(default=5, ge=2, le=10)
 
 
 class TaskRecord(BaseModel):
@@ -66,4 +86,7 @@ class TaskRecord(BaseModel):
     events: list[ActivityEvent] = Field(default_factory=list)
     tests: TestResult = Field(default_factory=TestResult)
     review: str = "Not reviewed yet."
+    review_result: ReviewResult | None = None
     diff: str = ""
+    modified_files: list[str] = Field(default_factory=list)
+    iterations: int = 0

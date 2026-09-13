@@ -39,7 +39,7 @@ def docker_available() -> bool:
         return False
 
 
-def run_in_sandbox(repository: Path, command_name: str) -> SandboxResult:
+def run_in_sandbox(repository: Path, command_name: str, image: str | None = None) -> SandboxResult:
     """Run one allowlisted command with no network and a read-write repo mount.
 
     The image should contain Python, pytest, and project-install support. The
@@ -67,7 +67,7 @@ def run_in_sandbox(repository: Path, command_name: str) -> SandboxResult:
     ]
     if not settings.sandbox_network:
         argv.extend(["--network", "none"])
-    argv.extend([settings.sandbox_image, *allowed_argv(command_name)])
+    argv.extend([image or settings.sandbox_image, *allowed_argv(command_name)])
     started = time.monotonic()
     try:
         completed = subprocess.run(

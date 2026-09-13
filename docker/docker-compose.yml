@@ -1,0 +1,104 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Agentic Software Engineer — production Docker Compose
+#
+# Secrets are read from environment variables or an .env file.
+# Never hard-code API keys in this file or commit them to version control.
+#
+# Quick start:
+#   cp .env.example .env          # fill in your API keys
+#   docker compose build sandbox  # build the test-executor image once
+#   docker compose up -d          # start api + ui
+# ---------------------------------------------------------------------------
+
+services:
+
+  # --------------------------------------------------------------------------
+  # sandbox — minimal Python image used only for isolated test execution.
+  # Build it once; the api service references it by the image name stored in
+  # SANDBOX_IMAGE (default: agentic-python-sandbox).
+  # --------------------------------------------------------------------------
+  sandbox:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    image: ${SANDBOX_IMAGE:-agentic-python-sandbox}
+    # No network, no entrypoint — this image is launched on-demand by the api.
+    network_mode: none
+    profiles:
+      - build   # only spun up during `docker compose --profile build up`
+
+  # --------------------------------------------------------------------------
+  # api — FastAPI backend (uvicorn)
+  # --------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    image: agentic-software-engineer-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - app_data:/app/data
+      # Give the api access to the Docker socket so it can launch the sandbox.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_PATH: /app/data/app.db
+      WORKSPACE_ROOT: /app/data/workspaces
+      VECTOR_STORE_PATH: /app/data/vector_store
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-agentic-python-sandbox}
+      SANDBOX_NETWORK: "false"
+      MAX_REPOSITORY_SIZE_MB: ${MAX_REPOSITORY_SIZE_MB:-20}
+      MAX_REPOSITORY_FILES: ${MAX_REPOSITORY_FILES:-1000}
+      MAX_AGENT_ITERATIONS: ${MAX_AGENT_ITERATIONS:-5}
+      TEST_TIMEOUT_SECONDS: ${TEST_TIMEOUT_SECONDS:-120}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-2}
+      REQUEST_LIMIT_PER_MINUTE: ${REQUEST_LIMIT_PER_MINUTE:-120}
+      WORKSPACE_TTL_HOURS: ${WORKSPACE_TTL_HOURS:-24}
+      # Provider keys — never hard-code; always inject via environment or secrets.
+      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY:-}
+      HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      MISTRAL_MODEL: ${MISTRAL_MODEL:-codestral-latest}
+      # Embeddings
+      EMBEDDING_PROVIDER_PRIMARY: ${EMBEDDING_PROVIDER_PRIMARY:-}
+      EMBEDDING_PROVIDER_FALLBACK: ${EMBEDDING_PROVIDER_FALLBACK:-}
+      HUGGINGFACE_EMBEDDING_API_KEY: ${HUGGINGFACE_EMBEDDING_API_KEY:-}
+      HUGGINGFACE_EMBEDDING_URL: ${HUGGINGFACE_EMBEDDING_URL:-}
+      HUGGINGFACE_EMBEDDING_MODEL: ${HUGGINGFACE_EMBEDDING_MODEL:-}
+    depends_on: []
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # --------------------------------------------------------------------------
+  # ui — Streamlit frontend
+  # --------------------------------------------------------------------------
+  ui:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    image: agentic-software-engineer-ui
+    restart: unless-stopped
+    command: ["uv", "run", "streamlit", "run", "ui/streamlit_app.py",
+              "--server.port", "8501", "--server.address", "0.0.0.0",
+              "--server.headless", "true"]
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    volumes:
+      - app_data:/app/data
+    environment:
+      API_BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  app_data:
+    driver: local

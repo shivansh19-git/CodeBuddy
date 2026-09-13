@@ -21,6 +21,23 @@ class ModelRouter:
         requires_structured_output: bool = False,
     ) -> LLMProvider:
         """Return the highest-priority healthy adapter meeting all requirements."""
+        candidates = self.compatible(
+            task_type=task_type,
+            requires_tools=requires_tools,
+            requires_structured_output=requires_structured_output,
+        )
+        if not candidates:
+            raise NoCompatibleProviderError("No healthy, compatible model provider is configured.")
+        return candidates[0]
+
+    def compatible(
+        self,
+        *,
+        task_type: str,
+        requires_tools: bool = False,
+        requires_structured_output: bool = False,
+    ) -> list[LLMProvider]:
+        """List compatible providers in fallback order, without calling them."""
         candidates = []
         for provider in self.providers:
             data = provider.descriptor
@@ -37,9 +54,7 @@ class ModelRouter:
                 and (not requires_structured_output or data.capabilities.structured_output)
             ):
                 candidates.append(provider)
-        if not candidates:
-            raise NoCompatibleProviderError("No healthy, compatible model provider is configured.")
-        return min(candidates, key=lambda provider: provider.descriptor.priority)
+        return sorted(candidates, key=lambda provider: provider.descriptor.priority)
 
     def status(self) -> list[dict[str, object]]:
         """Return display-safe metadata for the UI; keys are never stored here."""

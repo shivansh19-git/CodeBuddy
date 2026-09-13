@@ -2,16 +2,18 @@
 
 import re
 
-from app.repository import REPOSITORIES
+from app.repository import repository_root
 from app.sandbox.docker import SandboxUnavailableError, run_in_sandbox
+from app.sandbox.preparation import DependencyPreparationError, prepare_image
 from app.schemas import TestResult
 
 
 def run_tests(repository_id: str) -> TestResult:
     """Run pytest only in Docker; report unavailable infrastructure precisely."""
     try:
-        result = run_in_sandbox(REPOSITORIES[repository_id], "pytest")
-    except SandboxUnavailableError as exc:
+        root = repository_root(repository_id)
+        result = run_in_sandbox(root, "pytest", image=prepare_image(root))
+    except (DependencyPreparationError, SandboxUnavailableError) as exc:
         return TestResult(errors=1, success=False, output=f"ENVIRONMENT_ERROR: {exc}")
 
     def count(label: str) -> int:
@@ -25,5 +27,7 @@ def run_tests(repository_id: str) -> TestResult:
         skipped=count("skipped"),
         runtime_seconds=result.runtime_seconds,
         success=result.return_code == 0 and not result.timed_out,
+        # pytest uses exit code 5 when it could not discover any tests.
+        no_tests_collected=result.return_code == 5 or "no tests ran" in result.output.lower(),
         output=result.output,
     )

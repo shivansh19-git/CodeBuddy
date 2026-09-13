@@ -1,0 +1,5 @@
+# This Dockerfile is copied into a generated, requirements-only build context.
+# Repository source code is never copied or executed during preparation.
+FROM agentic-python-sandbox
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt

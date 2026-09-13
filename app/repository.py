@@ -8,6 +8,7 @@ and our host machine.
 import ast
 import shutil
 import subprocess
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -16,6 +17,7 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, UploadFile
 
 from app.config import settings
+from app.rag.cache import IndexCache, compute_content_hash
 from app.schemas import RepositorySummary, Symbol
 
 IGNORED_PARTS = {
@@ -41,6 +43,64 @@ def _inside(root: Path, candidate: Path) -> bool:
         return False
 
 
+def original_repository_root(repo_id: str) -> Path:
+    """Find the pristine original workspace created upon upload/clone."""
+    orig_dir = settings.workspace_root / f"{repo_id}_original"
+    if orig_dir.is_dir():
+        return _normalise_root(orig_dir)
+    return repository_root(repo_id)
+
+
+def _create_original_snapshot(repo_id: str, project_root: Path) -> None:
+    """Backup pristine repository files before any agent or manual edits occur."""
+    orig_dir = settings.workspace_root / f"{repo_id}_original"
+    if orig_dir.exists():
+        shutil.rmtree(orig_dir, ignore_errors=True)
+    shutil.copytree(project_root, orig_dir, dirs_exist_ok=True)
+
+
+def repository_root(repo_id: str) -> Path:
+    """Find an active workspace, restoring it from disk after an API restart.
+
+    New workspaces use the repository ID as their directory name. The in-memory
+    mapping is therefore only a speed-up, not the source of truth.
+    """
+    if repo_id in REPOSITORIES:
+        return REPOSITORIES[repo_id]
+    disk_root = settings.workspace_root / repo_id
+    if disk_root.is_dir():
+        # Match ZIP-upload behavior, where one wrapping directory is treated
+        # as the actual project root rather than an extra path level.
+        restored_root = _normalise_root(disk_root)
+        REPOSITORIES[repo_id] = restored_root
+        return restored_root
+    raise HTTPException(404, "Repository was not found (it may have expired).")
+
+
+def cleanup_expired_workspaces() -> int:
+    """Remove only UUID-named task workspaces older than the configured TTL."""
+    root = settings.workspace_root.resolve()
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - settings.workspace_ttl_hours * 3600
+    removed = 0
+    for candidate in root.iterdir():
+        if not candidate.is_dir() or candidate.stat().st_mtime >= cutoff:
+            continue
+        try:
+            uuid.UUID(candidate.name)
+            candidate.resolve().relative_to(root)
+        except (ValueError, OSError):
+            continue
+        shutil.rmtree(candidate)
+        orig_candidate = settings.workspace_root / f"{candidate.name}_original"
+        if orig_candidate.is_dir():
+            shutil.rmtree(orig_candidate, ignore_errors=True)
+        REPOSITORIES.pop(candidate.name, None)
+        removed += 1
+    return removed
+
+
 def _relevant_files(root: Path) -> list[Path]:
     return [
         p
@@ -61,10 +121,12 @@ def _validate_limits(root: Path) -> None:
 
 async def save_zip(upload: UploadFile) -> str:
     """Validate then extract a ZIP without allowing archive path traversal."""
+    cleanup_expired_workspaces()
     payload = await upload.read()
     if len(payload) > settings.max_repository_size_mb * 1024 * 1024:
         raise HTTPException(413, "Upload exceeds configured repository size limit.")
-    repo_id, root = str(uuid.uuid4()), settings.workspace_root / str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    root = settings.workspace_root / repo_id
     root.mkdir(parents=True, exist_ok=False)
     archive = root / "upload.zip"
     archive.write_bytes(payload)
@@ -91,6 +153,7 @@ async def save_zip(upload: UploadFile) -> str:
     except HTTPException:
         shutil.rmtree(root, ignore_errors=True)
         raise
+    _create_original_snapshot(repo_id, project_root)
     REPOSITORIES[repo_id] = project_root
     return repo_id
 
@@ -102,11 +165,13 @@ async def save_python_files(uploads: list[UploadFile]) -> str:
     name such as `../../secret.py` cannot choose a host filesystem location.
     Duplicate names receive a predictable suffix instead of overwriting data.
     """
+    cleanup_expired_workspaces()
     if not uploads:
         raise HTTPException(400, "Upload at least one Python file.")
     if len(uploads) > settings.max_repository_files:
         raise HTTPException(413, "Upload exceeds configured file-count limit.")
-    repo_id, root = str(uuid.uuid4()), settings.workspace_root / str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    root = settings.workspace_root / repo_id
     root.mkdir(parents=True, exist_ok=False)
     total_bytes = 0
     try:
@@ -125,6 +190,7 @@ async def save_python_files(uploads: list[UploadFile]) -> str:
                 counter += 1
             destination.write_bytes(payload)
         _validate_limits(root)
+        _create_original_snapshot(repo_id, root)
     except HTTPException:
         shutil.rmtree(root, ignore_errors=True)
         raise
@@ -134,10 +200,12 @@ async def save_python_files(uploads: list[UploadFile]) -> str:
 
 def clone_public_github(url: str) -> str:
     """Clone only a public github.com HTTPS URL, using a constrained command."""
+    cleanup_expired_workspaces()
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.netloc != "github.com":
         raise HTTPException(400, "Only public https://github.com URLs are supported.")
-    repo_id, root = str(uuid.uuid4()), settings.workspace_root / str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    root = settings.workspace_root / repo_id
     root.parent.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(
         ["git", "clone", "--depth", "1", url, str(root)],
@@ -150,6 +218,7 @@ def clone_public_github(url: str) -> str:
         raise HTTPException(400, "Could not clone the public repository.")
     try:
         _validate_limits(root)
+        _create_original_snapshot(repo_id, root)
     except HTTPException:
         shutil.rmtree(root, ignore_errors=True)
         raise
@@ -163,24 +232,50 @@ def _normalise_root(root: Path) -> Path:
     return children[0] if len(children) == 1 and children[0].is_dir() else root
 
 
+INDEX_CACHE = IndexCache(settings.workspace_root / ".cache" / "index_cache.json")
+
+
 def analyze_repository(repo_id: str) -> RepositorySummary:
-    if repo_id not in REPOSITORIES:
-        raise HTTPException(404, "Repository was not found (it may have expired).")
-    root = REPOSITORIES[repo_id]
+    root = repository_root(repo_id)
     files = _relevant_files(root)
     py_files = [p for p in files if p.suffix == ".py"]
     symbols: list[Symbol] = []
     for file in py_files:
         relative = file.relative_to(root).as_posix()
         try:
-            tree = ast.parse(file.read_text(encoding="utf-8"), filename=relative)
-        except (UnicodeDecodeError, SyntaxError):
+            content = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        content_hash = compute_content_hash(content)
+        cached_symbols = INDEX_CACHE.get_symbols(content_hash)
+        if cached_symbols is not None:
+            symbols.extend(
+                [
+                    s
+                    if s.file == relative
+                    else Symbol(
+                        file=relative,
+                        name=s.name,
+                        kind=s.kind,
+                        start_line=s.start_line,
+                        end_line=s.end_line,
+                        signature=s.signature,
+                        docstring=s.docstring,
+                    )
+                    for s in cached_symbols
+                ]
+            )
+            continue
+        try:
+            tree = ast.parse(content, filename=relative)
+        except SyntaxError:
             continue  # Broken source is reported later by test execution.
+        file_symbols: list[Symbol] = []
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 args = getattr(node, "args", None)
                 signature = f"({', '.join(a.arg for a in args.args)})" if args else ""
-                symbols.append(
+                file_symbols.append(
                     Symbol(
                         file=relative,
                         name=node.name,
@@ -191,6 +286,9 @@ def analyze_repository(repo_id: str) -> RepositorySummary:
                         docstring=ast.get_docstring(node),
                     )
                 )
+        INDEX_CACHE.set_symbols(content_hash, file_symbols)
+        INDEX_CACHE.save()
+        symbols.extend(file_symbols)
     return RepositorySummary(
         name=root.name,
         file_count=len(files),
