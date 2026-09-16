@@ -38,8 +38,16 @@ def _count(label: str, output: str) -> int:
 def _run_local_execution(root) -> SandboxResult:
     """Run pytest directly in the isolated Python environment."""
     started = time.monotonic()
+
+    # Create workspace pytest.ini to prevent pytest from traversing up to parent project
+    ini_file = root / "pytest.ini"
+    if not ini_file.exists() and not (root / "pyproject.toml").exists():
+        ini_file.write_text("[pytest]\ntestpaths = .\npythonpath = .\naddopts = -p no:cacheprovider --import-mode=importlib\n")
+
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
 
     # 1. Direct execution via current Python runtime (e.g. deployed server env)
     try:
@@ -50,7 +58,7 @@ def _run_local_execution(root) -> SandboxResult:
                 "pytest",
                 "--tb=short",
                 "-v",
-                "--rootdir=.",
+                "--import-mode=importlib",
                 "-p",
                 "no:cacheprovider",
             ],
@@ -99,7 +107,7 @@ def _run_local_execution(root) -> SandboxResult:
             subprocess.run([pip_exe, "install", "-r", str(req_file)], capture_output=True, check=False)
 
         completed = subprocess.run(
-            [pytest_exe, "--tb=short", "-v", "--rootdir=.", "-p", "no:cacheprovider"],
+            [pytest_exe, "--tb=short", "-v", "--import-mode=importlib", "-p", "no:cacheprovider"],
             cwd=str(root),
             env=env,
             capture_output=True,
