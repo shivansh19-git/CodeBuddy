@@ -7,6 +7,12 @@ Docker sandbox, or network access.
 from dataclasses import dataclass
 
 import pytest
+from unittest.mock import patch
+
+@pytest.fixture(autouse=True)
+def mock_update_total_diff():
+    with patch("app.agents.graph._update_total_diff") as mock:
+        yield mock
 
 from app.agents.graph import (
     GraphState,

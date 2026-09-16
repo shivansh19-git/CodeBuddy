@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     huggingface_model: str = "Qwen/Qwen2.5-Coder-32B-Instruct"
     mistral_api_key: str | None = None
     mistral_model: str = "codestral-latest"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.5-flash-lite"
+    groq_api_key: str | None = None
+    groq_model: str = "openai/gpt-oss-120b"
     embedding_provider_primary: str | None = None
     embedding_provider_fallback: str | None = None
     huggingface_embedding_api_key: str | None = None
@@ -35,3 +39,15 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def reload_settings() -> Settings:
+    """Re-read .env from disk and return a fresh Settings instance.
+
+    Call this whenever the .env file may have changed at runtime (e.g. after
+    a provider reconfiguration) so that the new model names and API keys take
+    effect without restarting the server process.
+    """
+    global settings
+    settings = Settings()
+    return settings

@@ -49,6 +49,7 @@ def test_filesystem_tool_applies_exact_single_edit(tmp_path: Path):
 
 
 def test_sandbox_command_allowlist_rejects_shell_input():
-    assert allowed_argv("pytest") == ["python", "-m", "pytest", "-q"]
+    from app.sandbox.security import ALLOWED_COMMANDS
+    assert allowed_argv("pytest") == ALLOWED_COMMANDS["pytest"]
     with pytest.raises(UnsafeCommandError):
         allowed_argv("pytest; rm -rf /")

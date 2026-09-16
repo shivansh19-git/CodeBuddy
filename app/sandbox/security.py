@@ -10,7 +10,17 @@ class UnsafeCommandError(ValueError):
 
 
 ALLOWED_COMMANDS: dict[str, list[str]] = {
-    "pytest": ["python", "-m", "pytest", "-q"],
+    # --tb=short   — concise but actionable tracebacks for the AI debug loop
+    # -v           — show each test name so the AI knows exactly what passed/failed
+    # --rootdir=.  — anchor pytest to the workspace root, never the server CWD
+    # -p no:cacheprovider — skip the .pytest_cache write in read-only layers
+    "pytest": [
+        "python", "-m", "pytest",
+        "--tb=short",
+        "-v",
+        "--rootdir=.",
+        "-p", "no:cacheprovider",
+    ],
     "ruff": ["ruff", "check", "."],
 }
 

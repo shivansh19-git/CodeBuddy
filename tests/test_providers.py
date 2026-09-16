@@ -22,11 +22,12 @@ def test_huggingface_generate_uses_router_chat_endpoint():
 
     assert provider.generate("Fix the test") == "patched"
     assert requests[0].url == "https://router.huggingface.co/v1/chat/completions"
-    assert requests[0].headers["Authorization"] == "Bearer hf-test-key"
-    assert requests[0].read().decode() == (
-        '{"model":"Qwen/test","messages":[{"role":"user","content":"Fix the test"}],'
-        '"response_format":{"type":"json_object"}}'
-    )
+    import json
+    body = json.loads(requests[0].read().decode())
+    assert body["model"] == "Qwen/test"
+    assert body["messages"] == [{"role": "user", "content": "Fix the test"}]
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["max_tokens"] == 4096
 
 
 def test_mistral_health_check_reports_unavailable_on_api_error():

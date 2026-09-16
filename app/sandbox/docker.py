@@ -44,6 +44,9 @@ def run_in_sandbox(repository: Path, command_name: str, image: str | None = None
 
     The image should contain Python, pytest, and project-install support. The
     host never interpolates model text into this command and no shell is used.
+
+    PYTHONPATH is set to /workspace so that local imports in generated code
+    (e.g. ``from my_module import foo``) always resolve inside the container.
     """
     if not docker_available():
         raise SandboxUnavailableError("Docker is unavailable; repository code was not executed.")
@@ -60,6 +63,8 @@ def run_in_sandbox(repository: Path, command_name: str, image: str | None = None
         "768m",
         "--cpus",
         "1.0",
+        # Ensure local imports in generated code always resolve.
+        "-e", "PYTHONPATH=/workspace",
         "-v",
         f"{repository.resolve()}:/workspace:rw",
         "-w",

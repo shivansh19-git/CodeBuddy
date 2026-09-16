@@ -76,29 +76,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  # --------------------------------------------------------------------------
-  # ui — Streamlit frontend
-  # --------------------------------------------------------------------------
-  ui:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.app
-    image: agentic-software-engineer-ui
-    restart: unless-stopped
-    command: ["uv", "run", "streamlit", "run", "ui/streamlit_app.py",
-              "--server.port", "8501", "--server.address", "0.0.0.0",
-              "--server.headless", "true"]
-    ports:
-      - "${UI_PORT:-8501}:8501"
-    volumes:
-      - app_data:/app/data
-    environment:
-      API_BASE_URL: http://api:8000
-    depends_on:
-      api:
-        condition: service_healthy
-
 volumes:
   app_data:
     driver: local

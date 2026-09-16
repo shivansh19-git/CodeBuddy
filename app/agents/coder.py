@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from app.models.base import LLMProvider
+from app.repository import IGNORED_PARTS
 from app.schemas import Symbol
 from app.tools.filesystem import create_file, read_file, replace_once
 
@@ -55,9 +56,15 @@ class CodingAgent:
     def __init__(self, provider: LLMProvider):
         self.provider = provider
 
+    def _generate(self, prompt: str, max_tokens: int = 8192) -> str:
+        try:
+            return self.provider.generate(prompt, max_tokens=max_tokens)
+        except TypeError:
+            return self.provider.generate(prompt)
+
     def execute(self, task: str, root: Path, context: list[Symbol]) -> CodingResult:
         """Generate, validate, and apply one bounded batch of requested edits."""
-        response = self._parse(self.provider.generate(self._prompt(task, root, context)))
+        response = self._parse(self._generate(self._prompt(task, root, context), max_tokens=8192))
         before = self._snapshot(root)
         modified_files: list[str] = []
         try:
@@ -66,8 +73,6 @@ class CodingAgent:
                 if edit.action == "create":
                     create_file(root, edit.path, edit.new)
                 else:
-                    if not edit.old:
-                        raise ValueError("A replace operation must include its exact old text.")
                     replace_once(root, edit.path, edit.old, edit.new)
                 modified_files.append(edit.path)
             self._validate_python_sources(root)
@@ -130,6 +135,7 @@ class CodingAgent:
             file.relative_to(root).as_posix(): file.read_text(encoding="utf-8")
             for file in root.rglob("*")
             if file.is_file() and file.suffix.lower() in ALLOWED_SUFFIXES
+            and not any(part in IGNORED_PARTS for part in file.parts)
         }
 
     @staticmethod
@@ -139,6 +145,7 @@ class CodingAgent:
             file.relative_to(root).as_posix()
             for file in root.rglob("*")
             if file.is_file() and file.suffix.lower() in ALLOWED_SUFFIXES
+            and not any(part in IGNORED_PARTS for part in file.parts)
         )[:30]
 
     @staticmethod
@@ -159,6 +166,16 @@ class CodingAgent:
     def _prompt(task: str, root: Path, context: list[Symbol]) -> str:
         """Send relevant code plus an inventory, never an entire repository."""
         sections = []
+        
+        target_file = None
+        if "[Target File: " in task:
+            target_file = task.split("[Target File: ")[1].split("]")[0]
+            try:
+                content = read_file(root, target_file)
+                sections.append(f"FILE: {target_file}\n```python\n{content}\n```")
+            except Exception:
+                pass
+
         for symbol in context[:8]:
             try:
                 source = read_file(root, symbol.file)
@@ -190,20 +207,23 @@ Return ONLY valid JSON exactly matching this schema:
 Available files: {", ".join(CodingAgent._file_inventory(root)) or "(none)"}
 
 ### CODING STANDARDS
-1. Write complete, fully implemented, working code. Do NOT write outlines, skeletons, or placeholder implementations. Make smart decisions for variables, models, and API usage.
-2. Write production-ready code. Do NOT write "example usage" blocks (even commented out), interactive `input()` loops, or print statements unless explicitly requested. Write clean, modular, robust, and reusable functions or classes.
-3. Edit Intelligently: If the task implies 'ADD', integrate your changes seamlessly into the existing code without deleting what is already there. If it implies 'CHANGE', modify only the necessary chunks unless a complete rewrite is genuinely required by the task.
+1. Write complete, fully implemented, working code. Do NOT write outlines, skeletons, or placeholder implementations.
+2. Edit Intelligently: If the prompt specifies a `[Target File: ...]`, you MUST prioritize editing that specific file unless absolutely necessary to edit others.
+3. Preserve Script Logic: If the existing code is a simple script with print statements, specific prompts, or example usage, PRESERVE that exact logic. Do NOT wrap it into a generic function or delete print statements unless the user explicitly asks you to refactor it.
+4. API Accuracy: When writing API calls (especially for LLMs), ensure you include all necessary parameters (like `model`, `messages`, `api_key`) to make the code fully functional.
+5. MODERN APIS: Always try to use the most recent versions of third-party APIs. However, if you only know an older version's syntax (for example, the old `MistralClient` instead of the new `Mistral` class), you MUST pin the older version in your `requirements.txt` file (e.g., `mistralai<1.0.0`). This guarantees the test runner will install the version compatible with your code so tests don't fail.
 
 ### EDITING RULES (STRICT)
 1. Allowed actions are "replace" and "create". Use "replace" if the file already exists in the Available files list. Use "create" ONLY for entirely new files. Use at most {MAX_EDITS} edits.
-2. For "replace", the `old` text must appear exactly once in the file. Include enough surrounding context to ensure uniqueness. The `old` text MUST be a perfect, character-for-character match with the existing file, including all whitespace and indentation.
-3. To ADD code to an existing file, use "replace": put the existing anchor lines (e.g., the code you want to insert after) in `old`, and output those SAME anchor lines alongside your new code in `new`. NEVER delete existing code when adding new features.
-4. Paths must be relative and end in .py, .md, .toml, or .txt.
-5. Do not delete files or use shell commands.
+2. For "replace", the `old` text MUST appear exactly once in the file. You MUST copy it EXACTLY character-for-character from the RELEVANT CODE provided above. NEVER hallucinate, guess, or type out what you think the existing code looks like. If you cannot perfectly match the existing code, you MUST use rule 3.
+3. If you are rewriting the code, fixing severe logic, or if you aren't 100% sure what the existing code looks like, you MUST REPLACE THE ENTIRE FILE: leave `old` completely empty ("") and provide the FULL, complete file content in `new`.
+4. To ADD code to an existing file without deleting anything, use "replace": put the exact existing anchor lines in `old`, and output those SAME anchor lines alongside your new code in `new`. 
+5. Paths must be relative and end in .py, .md, .toml, or .txt.
+6. Do not delete files or use shell commands.
 
 ### TESTING RULES (STRICT)
 1. SEPARATION OF CONCERNS: The implementation code MUST remain real and production-ready. NEVER insert mocks, fake classes, placeholders, or `MagicMock` into implementation files. Do NOT add `subprocess` installations or alter the intended code structure just to make tests pass.
-2. MOCKING: All mocking MUST be done inside the test files. To prevent tests from crashing on import due to top-level execution or missing dependencies, mock the required modules using `sys.modules` (e.g., `sys.modules['mistralai'] = MagicMock()`) INSIDE the test file BEFORE importing the target script.
+2. DEPENDENCIES: If your implementation uses external libraries (like `mistralai`, `requests`, etc.), you MUST write them into a `requirements.txt` file using the `create` action. The test runner will automatically install them before running your tests. Do NOT aggressively use `MagicMock` to bypass missing dependency errors; we want robust testing against real libraries.
 3. TEST CREATION: Testing is mandatory for behavior changes. Create or update a `test_*.py` file. Pytest is configured to only discover tests inside the `tests/` directory, so all new test files MUST be created inside `tests/` (e.g., `tests/test_feature.py`).
 
 ### CRITICAL WARNINGS

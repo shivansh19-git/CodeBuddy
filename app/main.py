@@ -3,6 +3,8 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -21,9 +23,17 @@ from app.schemas import ActivityEvent, TaskRecord, TaskRequest, TaskStatus
 from app.security import RequestRateLimiter, TaskConcurrencyLimiter
 from app.tools.execution import run_tests
 from app.tools.filesystem import _resolve, read_file
-from app.workflow import MODEL_ROUTER, TASKS, run_task
+from app.workflow import MODEL_ROUTER, TASKS, reload_router, run_task
 
 app = FastAPI(title="Agentic Software Engineer", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 TASK_STORE = TaskStore(settings.database_path)
 RATE_LIMITER = RequestRateLimiter(settings.request_limit_per_minute)
 TASK_LIMITER = TaskConcurrencyLimiter(settings.max_concurrent_tasks)
@@ -96,6 +106,7 @@ def _run_task_in_background(task_id: str, payload: TaskRequest) -> None:
             payload.description,
             payload.max_iterations,
             task_id=task_id,
+            provider=payload.provider,
         )
         TASK_STORE.save(task)
     except Exception as exc:
@@ -119,6 +130,7 @@ def create_task(payload: TaskRequest):
         description=payload.description,
         status="queued",
         phase="queue",
+        provider=payload.provider,
     )
     TASKS[task.id] = task
     TASK_STORE.save(task)
@@ -199,10 +211,17 @@ def get_file_content(repository_id: str, path: str = Query(...), original: bool 
 @app.post("/api/repositories/{repository_id}/files/content")
 def update_file_content(repository_id: str, payload: FileEditRequest):
     root = repository_root(repository_id)
+    orig_root = original_repository_root(repository_id)
     try:
         dest = _resolve(root, payload.path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(payload.content, encoding="utf-8")
+        
+        if root != orig_root:
+            orig_dest = _resolve(orig_root, payload.path)
+            orig_dest.parent.mkdir(parents=True, exist_ok=True)
+            orig_dest.write_text(payload.content, encoding="utf-8")
+
         return {"status": "success", "path": payload.path}
     except Exception as exc:
         raise HTTPException(400, str(exc))
@@ -246,3 +265,20 @@ def provider_status():
         }
     ]
 
+
+@app.post("/api/providers/reload")
+def reload_providers():
+    """Re-read .env from disk and rebuild the model router without restarting.
+
+    Call this after editing GROQ_MODEL, GEMINI_MODEL, or any provider key in
+    .env so that the new configuration takes effect for the next task.
+    """
+    router = reload_router()
+    return {
+        "status": "reloaded",
+        "providers": router.status(),
+    }
+
+import os
+if os.path.isdir("ui/dist"):
+    app.mount("/", StaticFiles(directory="ui/dist", html=True), name="ui")

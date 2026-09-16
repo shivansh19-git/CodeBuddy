@@ -1,4 +1,5 @@
-# Git Ignore for CodeBuddy
+# Docker Ignore for CodeBuddy
+.git/
 .env
 .venv/
 .uv-cache/
@@ -12,9 +13,10 @@ pytest_tmp/
 .bolt/
 test_dir/
 workspace/
-data/*
 data/workspaces/*
 !data/workspaces/.cache/
-!data/workspaces/.gitkeep
-ui/dist/
 ui/node_modules/
+tests/
+benchmarks/
+CODEBASE_INVENTORY.md
+DEPLOYMENT.md

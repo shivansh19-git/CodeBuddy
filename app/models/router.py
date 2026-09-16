@@ -19,12 +19,14 @@ class ModelRouter:
         task_type: str,
         requires_tools: bool = False,
         requires_structured_output: bool = False,
+        preferred_provider: str | None = None,
     ) -> LLMProvider:
         """Return the highest-priority healthy adapter meeting all requirements."""
         candidates = self.compatible(
             task_type=task_type,
             requires_tools=requires_tools,
             requires_structured_output=requires_structured_output,
+            preferred_provider=preferred_provider,
         )
         if not candidates:
             raise NoCompatibleProviderError("No healthy, compatible model provider is configured.")
@@ -36,11 +38,14 @@ class ModelRouter:
         task_type: str,
         requires_tools: bool = False,
         requires_structured_output: bool = False,
+        preferred_provider: str | None = None,
     ) -> list[LLMProvider]:
         """List compatible providers in fallback order, without calling them."""
         candidates = []
         for provider in self.providers:
             data = provider.descriptor
+            if preferred_provider and data.provider.lower() != preferred_provider.lower():
+                continue
             capable = (
                 data.capabilities.coding
                 if task_type in {"coding", "debugging", "test_generation"}

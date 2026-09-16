@@ -6,7 +6,9 @@ and our host machine.
 """
 
 import ast
+import os
 import shutil
+import stat
 import subprocess
 import time
 import uuid
@@ -77,6 +79,15 @@ def repository_root(repo_id: str) -> Path:
     raise HTTPException(404, "Repository was not found (it may have expired).")
 
 
+def force_remove_readonly(func, path, exc_info):
+    """Error handler for shutil.rmtree to remove read-only files on Windows."""
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass
+
+
 def cleanup_expired_workspaces() -> int:
     """Remove only UUID-named task workspaces older than the configured TTL."""
     root = settings.workspace_root.resolve()
@@ -92,10 +103,10 @@ def cleanup_expired_workspaces() -> int:
             candidate.resolve().relative_to(root)
         except (ValueError, OSError):
             continue
-        shutil.rmtree(candidate)
+        shutil.rmtree(candidate, onerror=force_remove_readonly)
         orig_candidate = settings.workspace_root / f"{candidate.name}_original"
         if orig_candidate.is_dir():
-            shutil.rmtree(orig_candidate, ignore_errors=True)
+            shutil.rmtree(orig_candidate, onerror=force_remove_readonly)
         REPOSITORIES.pop(candidate.name, None)
         removed += 1
     return removed

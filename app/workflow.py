@@ -10,6 +10,7 @@ import uuid
 from app.agents.coder import CodingAgent
 from app.agents.graph import run_graph
 from app.agents.planner import PlannerAgent
+from app.agents.test_writer import TestWriterAgent
 from app.agents.tester import TestAgent
 from app.config import settings
 from app.embeddings.registry import build_embedding_router
@@ -18,8 +19,8 @@ from app.models.providers import (
     ProviderRateLimitError,
     ProviderRequestError,
 )
-from app.models.registry import build_model_router
-from app.models.router import NoCompatibleProviderError
+from app.models.registry import build_model_router, reload_model_router
+from app.models.router import ModelRouter, NoCompatibleProviderError
 from app.rag.chunker import build_chunks
 from app.rag.retriever import HybridRetriever
 from app.repository import analyze_repository, repository_root
@@ -27,9 +28,23 @@ from app.review import build_review, review_summary
 from app.schemas import ActivityEvent, TaskRecord, TaskStatus
 
 TASKS: dict[str, TaskRecord] = {}
-MODEL_ROUTER = build_model_router()
+
+# Build the initial router at startup. This can be replaced at runtime via
+# reload_router() whenever .env is updated without restarting the server.
+MODEL_ROUTER: ModelRouter = build_model_router()
 HYBRID_RETRIEVER = HybridRetriever(build_embedding_router(), settings.vector_store_path)
 TEST_AGENT = TestAgent()
+
+
+def reload_router() -> ModelRouter:
+    """Re-read .env and rebuild MODEL_ROUTER in-place.
+
+    Call this (or hit POST /api/providers/reload) after updating .env so that
+    any new model names or API keys take effect immediately.
+    """
+    global MODEL_ROUTER
+    MODEL_ROUTER = reload_model_router()
+    return MODEL_ROUTER
 
 
 def _event(task: TaskRecord, phase: str, message: str, level: str = "info") -> None:
@@ -57,6 +72,31 @@ def _can_retry_tests(task: TaskRecord) -> bool:
     )
 
 
+def _select_test_writing_provider(coding_provider_name: str):
+    """Pick the best available provider that is DIFFERENT from the coding provider.
+
+    Using a different model to write tests prevents the coding model from simply
+    writing tests that pass its own (potentially wrong) implementation. A fresh
+    perspective from a second model produces more reliable, unbiased tests.
+
+    Falls back to the same provider if only one is configured.
+    """
+    all_providers = MODEL_ROUTER.compatible(
+        task_type="coding",
+        requires_tools=True,
+        requires_structured_output=True,
+    )
+    # Prefer a provider whose name differs from the coder's provider.
+    others = [
+        p for p in all_providers
+        if p.descriptor.provider.lower() != coding_provider_name.lower()
+    ]
+    if others:
+        return others[0]
+    # Fallback: only one provider configured — reuse it.
+    return all_providers[0] if all_providers else None
+
+
 def _run_coding_with_fallback(task: TaskRecord, prompt: str, repository_id: str):
     """Use the current provider until it fails, then try compatible fallback.
 
@@ -64,7 +104,8 @@ def _run_coding_with_fallback(task: TaskRecord, prompt: str, repository_id: str)
     output, so changing provider here cannot leave a partial edit batch.
     """
     providers = MODEL_ROUTER.compatible(
-        task_type="coding", requires_tools=True, requires_structured_output=True
+        task_type="coding", requires_tools=True, requires_structured_output=True,
+        preferred_provider=task.provider
     )
     if not providers:
         raise NoCompatibleProviderError("No compatible coding provider is configured.")
@@ -105,8 +146,17 @@ def _run_coding_with_fallback(task: TaskRecord, prompt: str, repository_id: str)
     raise ProviderRequestError("All compatible providers failed: " + ", ".join(failures))
 
 
+def _run_tests_safe(task: TaskRecord, repository_id: str):
+    return TEST_AGENT.run(task, repository_id)
+
+
 def run_task(
-    repository_id: str, description: str, max_iterations: int, task_id: str | None = None
+    repository_id: str,
+    description: str,
+    max_iterations: int = 5,
+    *,
+    task_id: str | None = None,
+    provider: str | None = None,
 ) -> TaskRecord:
     """Run safe local analysis; pause honestly before any unconfigured LLM work."""
     task = TaskRecord(
@@ -115,6 +165,7 @@ def run_task(
         description=description,
         status=TaskStatus.RUNNING,
         phase="validate",
+        provider=provider,
     )
     TASKS[task.id] = task
     _event(task, "analyze", "Repository validated; analyzing Python files with AST.")
@@ -137,36 +188,75 @@ def run_task(
     task.plan = fallback_plan.steps
     _event(task, "plan", "Created a deterministic structured implementation and verification plan.")
     try:
-        provider = MODEL_ROUTER.select(
-            task_type="coding", requires_tools=True, requires_structured_output=True
+        selected_provider = MODEL_ROUTER.select(
+            task_type="coding", requires_tools=True, requires_structured_output=True,
+            preferred_provider=provider
         )
         _event(
             task,
             "provider",
-            f"Selected {provider.descriptor.provider}/{provider.descriptor.model} for the coding operation.",
+            f"Selected {selected_provider.descriptor.provider}/{selected_provider.descriptor.model} for the coding operation.",
         )
+
+        # Select a DIFFERENT provider for test writing (avoids the coder
+        # writing tests that are biased towards its own implementation).
+        test_provider = _select_test_writing_provider(selected_provider.descriptor.provider)
+        if test_provider and test_provider.descriptor.provider != selected_provider.descriptor.provider:
+            _event(
+                task,
+                "provider",
+                f"Selected {test_provider.descriptor.provider}/{test_provider.descriptor.model} as the independent test-writing provider.",
+            )
+        else:
+            test_provider = selected_provider
+            _event(
+                task,
+                "provider",
+                "Only one provider configured — using the same provider for test writing.",
+                "warning",
+            )
+
         try:
-            generated_plan = PlannerAgent(provider).create(description, task.retrieved_context)
+            generated_plan = PlannerAgent(selected_provider).create(description, task.retrieved_context)
             task.plan = generated_plan.steps
-            _event(task, "plan", "Created a provider-generated structured task plan.")
-        except (OSError, ProviderRequestError, UnicodeError, ValueError):
             _event(
                 task,
                 "plan",
-                "Provider plan was unavailable; using the deterministic structured plan.",
+                "Created a dynamic structured implementation and verification plan.",
+            )
+        except Exception as exc:
+            _event(
+                task,
+                "plan",
+                f"Dynamic planning failed ({type(exc).__name__}), falling back to deterministic plan.",
                 "warning",
             )
-        # Delegate the implement → test → [debug → test]* → review loop to the
-        # LangGraph correction graph.  The graph exposes the same observable
-        # events and mutates ``task`` in-place via the shared GraphState dict.
+
+        def safe_coding_run(task: TaskRecord, prompt: str, repo: str):
+            return _run_coding_with_fallback(task, prompt, repo)
+
+        def safe_test_writing_run(task: TaskRecord, repo: str):
+            """Write tests using the secondary provider against the real implementation."""
+            root = repository_root(repo)
+            try:
+                return TestWriterAgent(test_provider).write(
+                    description, root, task.retrieved_context
+                )
+            except (ProviderRateLimitError, ProviderQuotaExhaustedError, ProviderRequestError) as exc:
+                raise  # Re-raise provider errors so callers can handle them.
+            except Exception as exc:
+                raise ValueError(f"Test writer failed: {exc}") from exc
+
         task = run_graph(
             task=task,
             description=description,
             repository_id=repository_id,
             max_iterations=max_iterations,
-            run_coding_fn=_run_coding_with_fallback,
-            run_tests_fn=TEST_AGENT.run,
+            run_coding_fn=safe_coding_run,
+            run_test_writing_fn=safe_test_writing_run,
+            run_tests_fn=_run_tests_safe,
         )
+        return task
     except NoCompatibleProviderError:
         task.status = TaskStatus.NEEDS_PROVIDER
         _event(

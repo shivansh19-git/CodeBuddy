@@ -72,6 +72,7 @@ class TaskRequest(BaseModel):
     description: str = Field(min_length=5, max_length=4000)
     # The initial implementation is attempt 1, so two attempts allow one repair pass.
     max_iterations: int = Field(default=5, ge=2, le=10)
+    provider: str | None = None
 
 
 class TaskRecord(BaseModel):
@@ -80,6 +81,7 @@ class TaskRecord(BaseModel):
     description: str
     status: TaskStatus
     phase: str
+    provider: str | None = None
     summary: RepositorySummary | None = None
     plan: list[str] = Field(default_factory=list)
     retrieved_context: list[Symbol] = Field(default_factory=list)

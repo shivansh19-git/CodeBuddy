@@ -38,7 +38,7 @@ class ChatCompletionProvider(LLMProvider):
     ):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._client = client or httpx.Client(timeout=30.0)
+        self._client = client or httpx.Client(timeout=120.0)
         self._owns_client = client is None
         self.descriptor = ModelDescriptor(
             provider=provider,
@@ -56,7 +56,7 @@ class ChatCompletionProvider(LLMProvider):
         self.descriptor = replace(self.descriptor, availability=availability)
         return self
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int = 4096) -> str:
         response = self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},
@@ -64,6 +64,7 @@ class ChatCompletionProvider(LLMProvider):
                 "model": self.descriptor.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
+                "max_tokens": max_tokens,
             },
         )
         self._raise_for_provider_error(response)
@@ -166,6 +167,48 @@ class MistralProvider(ChatCompletionProvider):
             api_key=api_key,
             model=model,
             base_url="https://api.mistral.ai/v1",
+            priority=priority,
+            client=client,
+        )
+
+
+class GroqProvider(ChatCompletionProvider):
+    """Groq API chat-completions adapter."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        priority: int = 5,
+        client: httpx.Client | None = None,
+    ):
+        super().__init__(
+            provider="groq",
+            api_key=api_key,
+            model=model,
+            base_url="https://api.groq.com/openai/v1",
+            priority=priority,
+            client=client,
+        )
+
+
+class GeminiProvider(ChatCompletionProvider):
+    """Google Gemini API chat-completions adapter using OpenAI compatibility layer."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        priority: int = 1,
+        client: httpx.Client | None = None,
+    ):
+        super().__init__(
+            provider="gemini",
+            api_key=api_key,
+            model=model,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             priority=priority,
             client=client,
         )

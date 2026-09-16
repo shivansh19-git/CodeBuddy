@@ -36,7 +36,7 @@ class LLMProvider(ABC):
     descriptor: ModelDescriptor
 
     @abstractmethod
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int = 4096) -> str:
         """Generate text. Implementations must raise on provider failure."""
 
     @abstractmethod
