@@ -17,12 +17,10 @@ dev = ["pytest>=8,<9", "ruff>=0.6,<1"]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["app", "app.agents", "app.db", "app.rag", "app.tools"]
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
 
 
 [tool.pytest.ini_options]
