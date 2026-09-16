@@ -19,11 +19,12 @@ def build_review(task: TaskRecord) -> ReviewResult:
             suggestions=["Add a discoverable test_*.py file with relevant test_ functions."],
         )
     if task.tests.output.startswith("ENVIRONMENT_ERROR:"):
+        detail = task.tests.output.replace("ENVIRONMENT_ERROR:", "").strip()
         return ReviewResult(
             approved=False,
             score=1.0,
-            issues=["The Docker sandbox was unavailable; tests did not execute."],
-            suggestions=["Start Docker Desktop and rebuild the sandbox image if required."],
+            issues=[f"Environment Error: {detail or 'Test runner unavailable.'}"],
+            suggestions=["Verify that pytest is installed on the server environment."],
         )
     return ReviewResult(
         approved=False,

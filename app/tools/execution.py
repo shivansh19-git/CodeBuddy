@@ -36,24 +36,54 @@ def _count(label: str, output: str) -> int:
 
 
 def _run_local_fallback(root) -> SandboxResult:
-    """Run pytest in a persistent per-workspace venv when Docker is unavailable.
-
-    The venv lives in a sibling directory (not inside the workspace) so it
-    survives workspace resets and is not picked up by pytest discovery.
-    Dependencies from requirements.txt are installed with an absolute path so
-    they always resolve regardless of the server's working directory.
-    """
+    """Run pytest directly or in a per-workspace venv when Docker is unavailable."""
     started = time.monotonic()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root)
 
-    # Place the venv outside the workspace so pytest never traverses into it.
-    venv_dir = root.parent / f".venv_{root.name}"
-
+    # 1. Direct execution via current Python runtime (e.g. deployed server env)
     try:
-        # Create venv only once; reuse on subsequent runs.
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--tb=short",
+                "-v",
+                "--rootdir=.",
+                "-p",
+                "no:cacheprovider",
+            ],
+            cwd=str(root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if "No module named pytest" not in completed.stderr:
+            return SandboxResult(
+                return_code=completed.returncode,
+                output=(completed.stdout + completed.stderr)[-12000:],
+                runtime_seconds=round(time.monotonic() - started, 2),
+            )
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or "") + (exc.stderr or ""))[-12000:]
+        return SandboxResult(
+            return_code=124,
+            output=output + "\nTIMEOUT: local test execution exceeded the configured limit.",
+            runtime_seconds=round(time.monotonic() - started, 2),
+            timed_out=True,
+        )
+    except Exception:
+        pass
+
+    # 2. Secondary fallback: create sub-venv
+    venv_dir = root.parent / f".venv_{root.name}"
+    try:
         if not venv_dir.exists():
             venv.EnvBuilder(with_pip=True).create(venv_dir)
 
-        # Resolve interpreter and tool paths for the current OS.
         if os.name == "nt":
             pip_exe = str(venv_dir / "Scripts" / "pip.exe")
             pytest_exe = str(venv_dir / "Scripts" / "pytest.exe")
@@ -61,38 +91,15 @@ def _run_local_fallback(root) -> SandboxResult:
             pip_exe = str(venv_dir / "bin" / "pip")
             pytest_exe = str(venv_dir / "bin" / "pytest")
 
-        # Ensure pytest is available in the venv.
         if not os.path.exists(pytest_exe):
-            subprocess.run(
-                [pip_exe, "install", "pytest"],
-                capture_output=True,
-                check=False,
-            )
+            subprocess.run([pip_exe, "install", "pytest"], capture_output=True, check=False)
 
-        # Install project dependencies using the *absolute* path to requirements.txt
-        # so this works regardless of the server process's CWD.
         req_file = root / "requirements.txt"
         if req_file.is_file():
-            subprocess.run(
-                [pip_exe, "install", "-r", str(req_file)],
-                capture_output=True,
-                check=False,
-            )
+            subprocess.run([pip_exe, "install", "-r", str(req_file)], capture_output=True, check=False)
 
-        # Build the env with PYTHONPATH pointing at the workspace root so that
-        # local imports in generated code resolve correctly.
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(root)
-
-        # Run pytest with the same rich flags used in the Docker sandbox.
         completed = subprocess.run(
-            [
-                pytest_exe,
-                "--tb=short",
-                "-v",
-                "--rootdir=.",
-                "-p", "no:cacheprovider",
-            ],
+            [pytest_exe, "--tb=short", "-v", "--rootdir=.", "-p", "no:cacheprovider"],
             cwd=str(root),
             env=env,
             capture_output=True,
@@ -105,7 +112,6 @@ def _run_local_fallback(root) -> SandboxResult:
             output=(completed.stdout + completed.stderr)[-12000:],
             runtime_seconds=round(time.monotonic() - started, 2),
         )
-
     except subprocess.TimeoutExpired as exc:
         output = ((exc.stdout or "") + (exc.stderr or ""))[-12000:]
         return SandboxResult(
@@ -116,6 +122,7 @@ def _run_local_fallback(root) -> SandboxResult:
         )
     except Exception as local_exc:
         raise RuntimeError(f"local pytest fallback failed: {local_exc}") from local_exc
+
 
 
 def run_tests(repository_id: str) -> TestResult:
