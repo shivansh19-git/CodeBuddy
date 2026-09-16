@@ -6,15 +6,15 @@ This document details the exact function of **every file and directory** in this
 
 ## 1. Project Architecture Overview
 
-**CodeBuddy** (Agentic Software Engineer) is an explainable, autonomous coding assistant for Python repositories. It parses codebases using AST, retrieves relevant context using hybrid RAG (BM25 lexical search + FAISS vector search), coordinates coding and test writing via a LangGraph state machine with provider fallback (Groq, Gemini, Mistral, HuggingFace), executes tests in an isolated sandbox with local venv fallback, and self-corrects based on pytest results.
+**CodeBuddy** (Agentic Software Engineer) is an explainable, autonomous coding assistant for Python repositories. It parses codebases using AST, retrieves relevant context using hybrid RAG (BM25 lexical search + FAISS vector search), coordinates coding and test writing via a LangGraph state machine with provider fallback (Groq, Gemini, Mistral, HuggingFace), executes tests in an isolated Python environment with workspace configuration lock, and self-corrects based on pytest results.
 
 ```
                   ┌──────────────────────┐
-                  │ React UI (Browser)   │
+                  │ React UI (Vercel)    │
                   └──────────┬───────────┘
                              │ HTTP / SSE
                   ┌──────────▼───────────┐
-                  │  FastAPI App (8000)  │
+                  │ FastAPI App (Render) │
                   │     (app/main.py)    │
                   └──────────┬───────────┘
                              │
@@ -51,8 +51,8 @@ This document details the exact function of **every file and directory** in this
           └─────────┬────────┘
                     ▼
           ┌──────────────────┐
-          │ Docker / Local   │
-          │ Pytest Sandbox   │
+          │  Native Python   │
+          │ Pytest Execution │
           └──────────────────┘
 ```
 
@@ -64,13 +64,14 @@ This document details the exact function of **every file and directory** in this
 
 | File | What it does | Why it is used / Where it is called | Status |
 | :--- | :--- | :--- | :--- |
-| **`pyproject.toml`** | Project configuration, metadata, build system settings, dependencies (`fastapi`, `langgraph`, `mistralai`, `faiss-cpu`, `pydantic`, `pytest`, `uvicorn`, etc.), and tool configs (`pytest`, `ruff`). Configures `addopts = "-p no:cacheprovider"` to avoid cache lock issues. | Used by `uv`, `pip`, and `pytest` to configure runtime, build, and tests. | **Active** |
-| **`uv.lock`** | Fully pinned, reproducible lockfile of all project dependencies and transitive packages. | Used by `uv` to ensure identical installations across dev, test, and container environments. | **Active** |
-| **`.env`** | Local environment file containing runtime secrets and provider keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `HUGGINGFACE_API_KEY`, model names, limits). | Loaded by `app/config.py` using `pydantic-settings`. | **Active** |
+| **`pyproject.toml`** | Project configuration, metadata, build system settings, explicit setuptools package discovery (`[tool.setuptools.packages.find]`), dependencies (`fastapi`, `langgraph`, `pytest`, `faiss-cpu`, `pydantic`, `uvicorn`, etc.), and tool configs. | Used by `uv`, `pip`, and `pytest` to configure runtime, build, and tests. | **Active** |
+| **`.python-version`** | Specifies exact Python version (`3.11.9`) for cloud hosting platforms like Render. | Read by Render/pyenv during build step to ensure binary compatibility. | **Active** |
+| **`uv.lock`** | Fully pinned, reproducible lockfile of all project dependencies and transitive packages. | Used by `uv` to ensure identical installations across environments. | **Active** |
+| **`.env`** | Local environment file containing runtime secrets and provider keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `HUGGINGFACE_API_KEY`). | Loaded by `app/config.py` using `pydantic-settings`. | **Active** |
 | **`.env.example`** | Safe template demonstrating required and optional environment variables with dummy values. | Used as documentation and onboarding template without exposing secrets. | **Active** |
-| **`.gitignore`** | Specifies files, build artifacts, virtual environments, caches, and secret files that Git must ignore. | Prevents committing `.venv`, caches, and ephemeral workspaces to version control. | **Active** |
+| **`.gitignore`** | Specifies files, build artifacts, virtual environments, caches, and secret files that Git must ignore. | Prevents committing `.venv`, caches, database files, and ephemeral workspaces to Git. | **Active** |
 | **`README.md`** | Main project documentation: architecture diagrams, setup instructions, feature highlights, and benchmark results. | Primary human-facing documentation. | **Active** |
-| **`DEPLOYMENT.md`** | Production deployment guide: Docker Compose, Nginx reverse proxy, HTTPS/TLS setup, security hardening, resource limits, and monitoring. | Reference document for deploying the app in production. | **Active** |
+| **`DEPLOYMENT.md`** | Production deployment guide: Render (backend) and Vercel (frontend) procedures, CORS setup, and environment variables. | Reference document for deploying the app in production. | **Active** |
 | **`CODEBASE_INVENTORY.md`** | This document: comprehensive audit of every file, architectural role, and identification of temp/useless files. | Developer reference and codebase cleanliness guide. | **Active** |
 
 ---
@@ -81,7 +82,7 @@ This document details the exact function of **every file and directory** in this
 | :--- | :--- | :--- | :--- |
 | **`app/__init__.py`** | Marks `app` as a Python package. | Allows modules inside `app` to be imported across the project. | **Active** |
 | **`app/config.py`** | Defines `Settings` using Pydantic Settings. Loads paths (`workspace_root`, `database_path`, `vector_store_path`), API keys, timeouts, and rate limits. | Central source of truth for configuration throughout `app/`. | **Active** |
-| **`app/main.py`** | The FastAPI HTTP server. Implements endpoints for repository uploads (ZIP/files/GitHub), task creation, status polling, diff retrieval, provider reloading, and health checks. | Main entry point for the backend API consumed by the UI. | **Active** |
+| **`app/main.py`** | The FastAPI HTTP server. Implements endpoints for repository uploads (ZIP/files/GitHub), task creation, status polling, diff retrieval, provider reloading, CORS middleware, and health checks. | Main entry point for the backend API consumed by the UI. | **Active** |
 | **`app/repository.py`** | Manages repository lifecycles on disk: unpacking ZIPs, cloning GitHub repos, parsing Python files with AST to extract functions/classes, workspace isolation, and workspace TTL cleanup. | Called upon repository upload and task initialization. | **Active** |
 | **`app/review.py`** | Compares modified code against original pristine snapshot to generate unified diffs, patch files, review summaries, and changed-file statistics. | Invoked by `app/agents/graph.py` and `app/workflow.py` at the conclusion of a coding task. | **Active** |
 | **`app/schemas.py`** | Core Pydantic models for data interchange: `TaskRecord`, `TaskStatus`, `ActivityEvent`, `Symbol`, `PlanStep`, `TestResult`, `CodingResponse`, `EditOperation`, etc. | Fundamental type definitions imported throughout backend and tests. | **Active** |
@@ -99,7 +100,7 @@ This document details the exact function of **every file and directory** in this
 | **`app/agents/graph.py`** | LangGraph State Machine defining a 5-node agent loop (`implement_node` → `write_tests_node` → `test_node` → `debug_node` → `review_node`). Supports flexible test-runner signatures and retry budgeting. | Orchestrates the implementation, test writing, and self-correction loop. | **Active** |
 | **`app/agents/planner.py`** | `PlannerAgent`: Analyzes task description and retrieved AST context to generate a structured implementation plan. Includes a deterministic fallback planner if LLM is unavailable. | Called by `app/workflow.py` before coding begins. | **Active** |
 | **`app/agents/test_writer.py`** | `TestWriterAgent`: Dedicated test generation agent. Uses a secondary independent LLM provider with token-safe compact prompts, backed by an AST-based programmatic test generator (`generate_ast_tests_for_repo`) that extracts real modules, functions, and classes with zero hallucination. Auto-detects 3rd-party imports and populates `requirements.txt`. | Invoked in `write_tests_node` to produce bulletproof tests before test execution. | **Active** |
-| **`app/agents/tester.py`** | `TestAgent`: Executes pytest test suites against the modified workspace inside the sandbox or local fallback, parsing exit codes and output. | Called by `app/agents/graph.py` to evaluate whether tests passed or broke. | **Active** |
+| **`app/agents/tester.py`** | `TestAgent`: Executes pytest test suites against the modified workspace inside an isolated Python environment, parsing exit codes and output. | Called by `app/agents/graph.py` to evaluate whether tests passed or broke. | **Active** |
 
 ---
 
@@ -139,17 +140,15 @@ This document details the exact function of **every file and directory** in this
 
 ---
 
-### Sandbox & Execution Tools (`app/sandbox/` & `app/tools/`)
+### Execution Tools (`app/sandbox/` & `app/tools/`)
 
 | File | What it does | Why it is used / Where it is called | Status |
 | :--- | :--- | :--- | :--- |
-| **`app/sandbox/__init__.py`** | Package initialization for sandbox tools. | Makes `app.sandbox` importable. | **Active** |
-| **`app/sandbox/docker.py`** | Docker container runner (`run_in_sandbox`): Runs ephemeral containers with memory, CPU, and network limits. | Called by `app/tools/execution.py` when Docker is active. | **Active** |
-| **`app/sandbox/preparation.py`** | Parses and validates `requirements.txt` from user repositories, rejecting unsafe flags before building container layers. | Ensures safe dependency installation in sandbox containers. | **Active** |
-| **`app/sandbox/security.py`** | Validates command-line arguments, whitelisting only safe commands (`pytest`, `python`, `ruff`) and preventing shell injection. | Called before executing container commands. | **Active** |
-| **`app/tools/__init__.py`** | Package initialization for agent tools. | Makes `app.tools` importable. | **Active** |
 | **`app/tools/filesystem.py`** | Safe filesystem tools: `read_file`, `create_file`, and `replace_once`. Enforces strict workspace path boundaries to prevent path traversal. | Used by `CodingAgent` and `TestWriterAgent` to apply edits. | **Active** |
-| **`app/tools/execution.py`** | `run_tests`: High-level test executor bridging Docker execution and persistent local venv fallback (`_run_local_fallback`). | Used by `TestAgent` to run pytest. | **Active** |
+| **`app/tools/execution.py`** | `run_tests`: Native Python test runner (`_run_local_execution`) with automatic workspace `pytest.ini` config lock, `--import-mode=importlib`, and `PYTHONDONTWRITEBYTECODE=1` for strict isolated execution without Docker overhead. | Used by `TestAgent` to run pytest. | **Active** |
+| **`app/sandbox/docker.py`** | `SandboxResult` dataclass and Docker CLI fallback definitions. | Reference dataclass for execution results. | **Active** |
+| **`app/sandbox/preparation.py`** | Parses and validates `requirements.txt` from user repositories. | Ensures safe dependency parsing. | **Active** |
+| **`app/sandbox/security.py`** | Validates command-line arguments, whitelisting only safe commands (`pytest`, `python`, `ruff`). | Security validator utility. | **Active** |
 
 ---
 
@@ -169,10 +168,10 @@ This document details the exact function of **every file and directory** in this
 
 | File | What it does | Why it is used / Where it is called | Status |
 | :--- | :--- | :--- | :--- |
-| **`docker/Dockerfile`** | Base sandbox Dockerfile with `python:3.11-slim`, `pytest`, and `ruff`. | Built as `agentic-python-sandbox` image. | **Active** |
-| **`docker/Dockerfile.dependencies`** | Multi-stage Dockerfile that installs dynamic `requirements.txt` from user repositories. | Used by `app/sandbox/preparation.py`. | **Active** |
-| **`docker/Dockerfile.app`** | Multi-stage production image definition for compiling the React frontend and running the FastAPI backend. | Used by `docker-compose.yml`. | **Active** |
-| **`docker/docker-compose.yml`** | Container Compose spec launching the unified API service. | Used for one-command production deployments. | **Active** |
+| **`docker/Dockerfile`** | Base sandbox Dockerfile with `python:3.11-slim`, `pytest`, and `ruff`. | Container reference spec. | **Active** |
+| **`docker/Dockerfile.dependencies`** | Multi-stage Dockerfile that installs dynamic `requirements.txt` from user repositories. | Used by container builders. | **Active** |
+| **`docker/Dockerfile.app`** | Multi-stage production image definition for compiling the React frontend and running the FastAPI backend. | Optional container production build spec. | **Active** |
+| **`docker/docker-compose.yml`** | Container Compose spec launching the unified API service. | Used for local Docker Compose runs. | **Active** |
 
 ---
 
@@ -180,8 +179,10 @@ This document details the exact function of **every file and directory** in this
 
 | File | What it does | Why it is used / Where it is called | Status |
 | :--- | :--- | :--- | :--- |
-| **`ui/package.json`** | Defines npm dependencies (React, Vite, Tailwind, Lucide React) and build scripts for the frontend. | Used to build frontend assets (`npm run build`). | **Active** |
-| **`ui/src/App.tsx`** | Main React application component. Provides repository upload tabs, provider status display, real-time event logs, interactive split-pane diff viewer, and API communication. | Primary frontend component rendered by the browser. | **Active** |
+| **`ui/package.json`** | Defines npm dependencies (React, Vite, Tailwind, Lucide React) and build scripts (`codebuddy-ui`). | Used to build frontend assets (`npm run build`). | **Active** |
+| **`ui/index.html`** | Main HTML entrypoint configured with custom CodeBuddy social preview meta tags and vector favicon. | Served by Vite and deployed on Vercel. | **Active** |
+| **`ui/public/favicon.svg`** | Custom SVG logo graphic for CodeBuddy browser tab icon. | Rendered in browser tab bar. | **Active** |
+| **`ui/src/App.tsx`** | Main React application component. Provides repository upload tabs, provider status display, real-time event logs, interactive split-pane diff viewer, and API communication (`VITE_API_URL`). | Primary frontend component rendered by the browser. | **Active** |
 | **`ui/vite.config.ts`** | Configuration for Vite bundler, defining React plugins and path aliases. | Used by `npm run build` to output optimized static files into `ui/dist`. | **Active** |
 
 ---
@@ -213,73 +214,19 @@ All 49 tests pass in under 10 seconds without requiring external API keys or Doc
 
 ---
 
-## 3. Useless Files vs. Temporary Files Breakdown
+## 3. Temporary Files Breakdown (Caches & Ephemeral Data)
 
-Below is the definitive classification of files that can be safely deleted or cleaned up.
+These files and folders are created dynamically during local development, test execution, or user tasks. None of them contain source code, and all are safely listed in `.gitignore`:
 
-### Category A: Useless / Redundant Files (Dead Code & Scratch Scripts)
-
-These files contain code or documentation that is completely unused, superseded, or obsolete:
-
-1. **`app/tools/search.py`**
-   - **Reason**: Dead code. Contains a standalone `search_code()` function that is **never imported anywhere** in `app/`, `tests/`, or `benchmarks/`. It was superseded by AST parsing and `HybridRetriever`.
-   - **Action**: Safe to delete immediately.
-
-2. **`debug_agent.py`** (Root directory)
-   - **Reason**: One-off ad-hoc debugging script used to manually test `run_task` with dummy strings. Does not belong in the production codebase.
-   - **Action**: Safe to delete immediately.
-
-3. **`fuzzy_test.py`** (Root directory)
-   - **Reason**: One-off scratch test script for regex/fuzzy line replacement. Redundant; tests in `tests/test_coder.py` cover this officially.
-   - **Action**: Safe to delete immediately.
-
-4. **`test.py`** (Root directory)
-   - **Reason**: Temporary 4-line scratch script used to remove a directory.
-   - **Action**: Safe to delete immediately.
-
-5. **`incomplete_tasks.md`** (Root directory)
-   - **Reason**: Obsolete historical tracking list where all tasks are already marked completed (`[x]`). Active features are fully documented in `README.md`.
-   - **Action**: Safe to delete or archive.
-
-6. **`test_dir/`** (Root directory)
-   - **Reason**: Residual directory containing a dummy `test.txt` file created during testing.
-   - **Action**: Safe to delete.
-
-7. **`workspace/`** (Root directory)
-   - **Reason**: Leftover scratch directory containing an old `.test_venv`. The real task workspaces live under `data/workspaces/`.
-   - **Action**: Safe to delete.
-
-8. **`.bolt/`** (Root directory)
-   - **Reason**: Leftover scaffolding configuration from a previous web IDE template (`prompt` and `config.json`). Not used by CodeBuddy.
-   - **Action**: Safe to delete.
-
----
-
-### Category B: Temporary Files (Caches & Ephemeral Run Data)
-
-These files and folders are created dynamically during development, test runs, or user tasks. None of them contain source code, and all can be safely purged:
-
-1. **`.pytest-tmp/` and `pytest_tmp/`**
-   - **What it is**: Temporary workspace and fixture directories created during pytest runs.
-   - **Safety**: Safe to purge; automatically recreated during test runs.
-
-2. **`.pytest_cache/`**
+1. **`.pytest_cache/`**
    - **What it is**: Pytest internal execution and failure-tracking cache.
    - **Safety**: Safe to delete; automatically recreated.
 
-3. **`.ruff_cache/`**
+2. **`.ruff_cache/`**
    - **What it is**: Ruff linter internal analysis cache.
    - **Safety**: Safe to delete; automatically recreated.
 
-4. **`.uv-cache/`**
-   - **What it is**: Local package wheels and index cache created by `uv`.
-   - **Safety**: Safe to delete to free disk space.
-
-5. **`.tmp/`**
-   - **What it is**: Scratch directory used for temporary file operations and benchmarks.
-   - **Safety**: Safe to delete.
-
-6. **`data/workspaces/<uuid>/` and `data/workspaces/<uuid>_original/`**
+3. **`data/workspaces/<uuid>/` and `data/workspaces/<uuid>_original/`**
    - **What it is**: Ephemeral working directories cloned for past agent runs.
    - **Safety**: Safe to delete all UUID subfolders inside `data/workspaces/`. (Keep `data/app.db` and `data/workspaces/.cache/`).
 
@@ -290,31 +237,19 @@ These files and folders are created dynamically during development, test runs, o
 ### PowerShell (Windows)
 
 ```powershell
-# 1. Remove dead code and scratch files
-Remove-Item -Path "app\tools\search.py", "debug_agent.py", "fuzzy_test.py", "test.py", "incomplete_tasks.md" -Force -ErrorAction SilentlyContinue
-
-# 2. Remove scratch directories
-Remove-Item -Recurse -Force "test_dir", "workspace", ".bolt" -ErrorAction SilentlyContinue
-
-# 3. Remove temporary test caches
+# 1. Remove temporary test caches
 Remove-Item -Recurse -Force ".pytest-tmp", "pytest_tmp", ".tmp", ".pytest_cache", ".ruff_cache", ".uv-cache" -ErrorAction SilentlyContinue
 
-# 4. Clean up stale workspaces (preserving index_cache.json and database)
+# 2. Clean up stale workspaces (preserving index_cache.json and database)
 Get-ChildItem -Path "data\workspaces" -Directory | Where-Object { $_.Name -ne ".cache" } | Remove-Item -Recurse -Force
 ```
 
 ### Bash / Linux / macOS
 
 ```bash
-# 1. Remove dead code and scratch files
-rm -f app/tools/search.py debug_agent.py fuzzy_test.py test.py incomplete_tasks.md
-
-# 2. Remove scratch directories
-rm -rf test_dir workspace .bolt
-
-# 3. Remove temporary test caches
+# 1. Remove temporary test caches
 rm -rf .pytest-tmp pytest_tmp .tmp .pytest_cache .ruff_cache .uv-cache
 
-# 4. Clean up stale workspaces (preserving index_cache.json)
+# 2. Clean up stale workspaces (preserving index_cache.json)
 find data/workspaces -mindepth 1 -maxdepth 1 -not -name ".cache" -exec rm -rf {} +
 ```
