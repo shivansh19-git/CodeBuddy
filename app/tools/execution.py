@@ -8,9 +8,9 @@ import time
 import venv
 
 from app.repository import repository_root
-from app.sandbox.docker import SandboxResult, SandboxUnavailableError, run_in_sandbox
-from app.sandbox.preparation import DependencyPreparationError, prepare_image
+from app.sandbox.docker import SandboxResult
 from app.schemas import TestResult
+
 
 # Patterns that indicate pytest found no tests to run.
 _NO_TESTS_PATTERNS = re.compile(
@@ -35,8 +35,8 @@ def _count(label: str, output: str) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _run_local_fallback(root) -> SandboxResult:
-    """Run pytest directly or in a per-workspace venv when Docker is unavailable."""
+def _run_local_execution(root) -> SandboxResult:
+    """Run pytest directly in the isolated Python environment."""
     started = time.monotonic()
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root)
@@ -126,27 +126,17 @@ def _run_local_fallback(root) -> SandboxResult:
 
 
 def run_tests(repository_id: str) -> TestResult:
-    """Run pytest in Docker (preferred) or a local venv fallback.
-
-    Returns a fully populated TestResult regardless of which path was taken.
-    ENVIRONMENT_ERROR prefix in ``output`` signals infrastructure problems
-    (Docker unavailable AND local fallback failed) so callers can distinguish
-    them from real test failures.
-    """
+    """Run pytest directly in the isolated Python environment."""
     root = repository_root(repository_id)
 
     try:
-        result = run_in_sandbox(root, "pytest", image=prepare_image(root))
-    except (DependencyPreparationError, SandboxUnavailableError):
-        # Docker not available — try a local venv instead.
-        try:
-            result = _run_local_fallback(root)
-        except Exception as local_exc:
-            return TestResult(
-                errors=1,
-                success=False,
-                output=f"ENVIRONMENT_ERROR: local pytest fallback failed: {local_exc}",
-            )
+        result = _run_local_execution(root)
+    except Exception as local_exc:
+        return TestResult(
+            errors=1,
+            success=False,
+            output=f"ENVIRONMENT_ERROR: local pytest execution failed: {local_exc}",
+        )
 
     no_tests = _is_no_tests_collected(result.return_code, result.output)
 
